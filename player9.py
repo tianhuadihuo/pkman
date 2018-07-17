@@ -11,6 +11,11 @@ sys.path.insert(0, "holdem_calc")
 import holdem_calc
 import deuces
 
+from pklearn import Table
+from pklearn.templates import simulate, BasicPlayer
+from sklearn.ensemble import GradientBoostingRegressor
+
+
 # pip install websocket-client
 
 ws = ""
@@ -336,7 +341,7 @@ def evaluate(data):
     elif data["game"]["roundName"] == "River":
         evaluate_river(hole_cards, board_cards, data)
 
-def react(event, data):
+def react(event, data, players):
     """
     React to events
     """
@@ -405,12 +410,14 @@ def react(event, data):
         }
     elif event == "__bet":
         #time.sleep(2)
-        evaluate(data)
+        #evaluate(data)
+        take_action(players[0].act(data))
         if not action_taken :
             take_action("bet", 10)
     elif event == "__action":
         #time.sleep(2)
-        evaluate(data)
+        #evaluate(data)
+        take_action(players[0].act(data))
         if not action_taken :
             take_action("check")
     elif event == "__game_over":
@@ -429,7 +436,7 @@ def react(event, data):
         print "==== unknown event ==== : " + event
 
 
-def doListen():
+def doListen(players):
     try:
         global ws
         #ws = create_connection("ws://pokerai.trendmicro.com.cn")
@@ -447,13 +454,38 @@ def doListen():
             data = msg["data"]
             print event_name
             print data
-            react(event_name, data)
+            react(event_name, data, players)
     except Exception, e:
         print e.message
-        doListen()
+        doListen(players)
 
 
 if __name__ == '__main__':
 
+    # simulate and train
+    t = Table(smallBlind=1, bigBlind=2, maxBuyIn=200)
+
+    players = []
+    for i in range(6):
+        
+        #create BasicPlayer that uses GradientBoostingRegressor as machine learning model
+        #with wealth of 1 million and 10 discrete choices for raising,
+        #with each raise choice .7 times the next largest raise choice
+        #Player forgets training samples older than 100,000
+        r = GradientBoostingRegressor()
+        name = 'Player ' + str(i+1)
+        p = BasicPlayer(name=name, reg=r, bankroll=10**6, nRaises=10, rFactor=.7, memory=10**5)
+        p.stopTraining()
+        players.append(p)
+
+    for p in players: t.addPlayer(p)
+
+    #train Player 1 for 100000 hands, training once
+    players[0].startTraining()
+    simulate(t, nHands=100000, nTrain=1000, nBuyIn=10)   
+    players[0].stopTraining()
+
+
+
     my_id = "cloud9"
-    doListen()
+    doListen(players)
