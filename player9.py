@@ -11,10 +11,11 @@ sys.path.insert(0, "holdem_calc")
 import holdem_calc
 import deuces
 
+import numpy as np
+
 from pklearn import Table
 from pklearn.templates import simulate, BasicPlayer
 from sklearn.ensemble import GradientBoostingRegressor
-
 
 # pip install websocket-client
 
@@ -321,17 +322,133 @@ def convert_card_format(card):
         return
     return card[0] + card[1].lower()
 
-def evaluate(data):
+
+def getAllActions(toCall, roundBet, stack):
+    
+    """ This method accepts the dictionary gameState and returns the set of all possible actions. """
+
+    
+    rChoices=[0.25, 0.5, 0.75, 1]
+    
+    #toCall: mount necessary to call
+    #minRaise: new total bet amount necessary to raise
+    minRaise = toCall*2    
+    
+    #maxBet: maximum bet player could have in pot, including chips already in pot
+    maxBet = roundBet + stack
+
+    actions = []    #set of all possible actions
+
+    if toCall > stack:   #player cannot match entire bet
+        actions.append(('call',))
+        actions.append(('fold',))
+        return actions
+        
+    if maxBet < minRaise:    #player has enough chips to call but not to raise
+        if toCall == 0: actions.append(('check',))
+        else: 
+            actions.append(('call',))
+            actions.append(('fold',))
+        return actions
+
+    #add eligible raise choices to actions
+    #raise actions include a raise to amount, not a raise by amount
+    for r in rChoices:
+        amt = int(stack * r) 
+        if amt >= minRaise and amt <= maxBet: actions.append(('raise', amt))
+
+    #player has enough chips to raise
+    if toCall == 0: actions.append(('check',))
+    else:
+        actions.append(('call',))
+        actions.append(('fold',))
+    
+    return actions
+
+def genActionFeatures(action, toCall, pot):
+
+    """ This method generates a set of features from a player action. """
+
+    #create binary encoding for action type
+    actionFeatures = 7 * [0]
+
+    if action[0] == 'check': actionFeatures[0] = 1
+    elif action[0] == 'fold': actionFeatures[1] = 1
+    elif action[0] == 'call': actionFeatures[2] = 1
+    elif action[0] == 'raise' or action[0] == 'bet':
+        actionFeatures[3] = 1
+        actionFeatures[4] = action[1]    #raise to amount
+        actionFeatures[5] = action[1] - toCall    #raise by amount
+        actionFeatures[6] = actionFeatures[5] / pot    #proportion of raise by to pot size
+    else: raise Exception('Invalid action.')
+
+    return actionFeatures
+    
+def evaluate(data, train_player):
     """
     Make decision of each stage
     """
-
+    print "evaluate"
+    nEnum = {'2':2, '3':3, '4':4, '5':5,'6':6, '7':7, '8':8, '9':9, 'T':10, 'J':11, 'Q':12, 'K':13, 'A':14}
+    
     hole_cards  = [convert_card_format(c) for c in data["self"]["cards"]]
     board_cards = [convert_card_format(c) for c in data["game"]["board"]]
+    chips = data["self"]["chips"]
+    roundBet = data["self"]["roundBet"]
+    toCall = data["self"]["minBet"]
+    #toCall = 100
+    print "test"
     print "==== my cards ==== " + str(hole_cards)
     print "==== board ==== " + str(board_cards)
     print "==== Current pot ==== %d" % (pot)
+    print "==== my stack ======= %d" % (chips)
+    print "==== roundBet ======= %d" % (roundBet)
+    
+    ############################################
+    ###       prepare gameFeatures         ####
+    cards=sorted(hole_cards)+sorted(board_cards)
+    print cards
+    card_numbers=[]
+    card_suits=[]
+    for i in cards:
+        card_numbers.append(nEnum[i[0]])
+        card_suits.append(i[1])
+    print card_numbers
+    print card_suits
+    
+    gameFeatures = 43 * [0]
+    for i in range(len(cards)):
+        gameFeatures[6 * i] = 1    #ith card exists
+        gameFeatures[6 * i + 1] = card_numbers[i]
+        suit = card_suits[i]
+        
+        #create binary encoding for suit
+        gameFeatures[6 * i + 2] = suit == 'c' 
+        gameFeatures[6 * i + 3] = suit == 'd'
+        gameFeatures[6 * i + 4] = suit == 's'
+        gameFeatures[6 * i + 5] = suit == 'h'
 
+    #player stack size
+    gameFeatures[42] = chips
+    print gameFeatures
+    ##############################################
+    
+    
+    allActions=getAllActions(toCall, roundBet, chips)
+    print allActions
+    
+    allFeatures = []
+    for a in allActions: allFeatures.append(gameFeatures + genActionFeatures(a, toCall, pot))
+    pReturn = train_player._reg.predict(allFeatures)
+    action = allActions[np.argmax(pReturn)]
+    
+    print action
+    
+    if action[0] == "raise":
+        take_action("raise", action[1])
+    else:
+        take_action(action[0])
+    '''
     if data["game"]["roundName"] == "Deal":
         evaluate_deal(hole_cards, data)
     elif data["game"]["roundName"] == "Flop":
@@ -340,8 +457,9 @@ def evaluate(data):
         evaluate_turn(hole_cards, board_cards, data)
     elif data["game"]["roundName"] == "River":
         evaluate_river(hole_cards, board_cards, data)
+    '''
 
-def react(event, data, players):
+def react(event, data, trained_player):
     """
     React to events
     """
@@ -410,14 +528,12 @@ def react(event, data, players):
         }
     elif event == "__bet":
         #time.sleep(2)
-        #evaluate(data)
-        take_action(players[0].act(data))
+        evaluate(data, trained_player)
         if not action_taken :
             take_action("bet", 10)
     elif event == "__action":
         #time.sleep(2)
-        #evaluate(data)
-        take_action(players[0].act(data))
+        evaluate(data, trained_player)
         if not action_taken :
             take_action("check")
     elif event == "__game_over":
@@ -436,11 +552,11 @@ def react(event, data, players):
         print "==== unknown event ==== : " + event
 
 
-def doListen(players):
+def doListen(player):
     try:
         global ws
-        #ws = create_connection("ws://pokerai.trendmicro.com.cn")
-        ws = create_connection("ws://10.64.8.72")
+        ws = create_connection("ws://pokerai.trendmicro.com.cn")
+        #ws = create_connection("ws://10.64.8.72")
         ws.send(json.dumps({
             "eventName": "__join",
             "data": {
@@ -453,16 +569,25 @@ def doListen(players):
             event_name = msg["eventName"]
             data = msg["data"]
             print event_name
-            print data
-            react(event_name, data, players)
+            #print data
+            react(event_name, data, player)
     except Exception, e:
         print e.message
-        doListen(players)
+        doListen(player)
 
 
 if __name__ == '__main__':
 
-    # simulate and train
+    my_id = "pk-man"
+#    my_id = "730908575451990f4f3dc625baef4697"
+    my_md5 = hashlib.md5(my_id).hexdigest()
+#    my_md5 = "730908575451990f4f3dc625baef4697"
+    print my_md5
+    
+    
+    try: import matplotlib.pyplot as plt
+    except: print 'Must install matplotlib to run this demo.\n'
+
     t = Table(smallBlind=1, bigBlind=2, maxBuyIn=200)
 
     players = []
@@ -474,18 +599,33 @@ if __name__ == '__main__':
         #Player forgets training samples older than 100,000
         r = GradientBoostingRegressor()
         name = 'Player ' + str(i+1)
-        p = BasicPlayer(name=name, reg=r, bankroll=10**6, nRaises=10, rFactor=.7, memory=10**5)
+        p = BasicPlayer(name=name, reg=r, bankroll=10000, nRaises=4, rFactor=.7, memory=10**5)
         p.stopTraining()
         players.append(p)
 
     for p in players: t.addPlayer(p)
 
-    #train Player 1 for 100000 hands, training once
+    #train Player 1 for 1000 hands, training once
     players[0].startTraining()
-    simulate(t, nHands=100000, nTrain=1000, nBuyIn=10)   
+    simulate(t, nHands=2000, nTrain=100, nBuyIn=10)   
     players[0].stopTraining()
 
+    #for p in players: p.setBankroll(10**6)
 
+    #simulate 20,000 hands and save bankroll history
+    #bankrolls = simulate(t, nHands=20, nTrain=0, nBuyIn=10)
 
-    my_id = "cloud9"
-    doListen(players)
+    #plot bankroll history of each player
+    '''
+    for i in range(6):
+        bankroll = bankrolls[i]
+        plt.plot(range(len(bankroll)), bankroll, label=players[i].getName())
+    plt.title('Player bankroll vs Hands played')        
+    plt.xlabel('Hands played')
+    plt.ylabel('Player bankroll/wealth')
+    plt.legend(loc='upper left')
+    plt.show()
+    '''
+    
+    
+    doListen(players[0])

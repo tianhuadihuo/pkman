@@ -82,7 +82,7 @@ class Player:
 
         #store action features
         actionFeatures = self._genActionFeatures(action, gameState)  
-
+        print "actionFeatures: ", actionFeatures
         if self._train: 
             self._stacks.append(self._stack)
             self._features.append(gameFeatures + actionFeatures)
@@ -106,7 +106,8 @@ class Player:
 
         for i in range(len(self._labels), len(self._features)):
             self._labels.append(self._stack - self._stacks[i])
-
+            print "_stack: ", self._stack
+            print "_stacks[]: ", self._stacks[i]
         self._features = self._features[-self._memory:]
         self._stacks = self._stacks[-self._memory:]
         self._labels = self._labels[-self._memory:]
@@ -119,8 +120,10 @@ class Player:
         """
         
         if not self._train: return
-
+        print "_labels: ", self._labels
+        
         self._reg.fit(self._features, self._labels)
+        
         self._fit = True
 
     def _allActions(self, gameState):
